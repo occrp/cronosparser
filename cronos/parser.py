@@ -255,11 +255,3 @@ def parse(db_folder, out_folder):
             # for v, k in zip(row, columns):
             #     print v, k
         fh.close()
-
-
-# for ns in ['LOCATION2', 'LOCATION', 'transn', 'TWO TABLES', 'mod2', 'mod3']:
-# for ns in [u'data/Казахстан - осужденные']:
-for ns in [u'DATA RICH']:
-    # for ns in ['transn']:
-    print ns
-    parse(ns, 'csv')
