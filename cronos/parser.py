@@ -4,7 +4,7 @@ import struct
 import csv
 from itertools import count
 
-from cronos.constants import KOD, PK_SENTINEL, RECORD_SEP, ENC
+from cronos.constants import KOD, PK_SENTINEL, RECORD_SEP, ENC, NULL
 
 
 class CronosException(Exception):

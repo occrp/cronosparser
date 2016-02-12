@@ -1,4 +1,4 @@
 from cronos.parser import CronosException
-from cronos.parser import parse_database
+from cronos.parser import parse
 
 __all__ = [CronosException, parse]
