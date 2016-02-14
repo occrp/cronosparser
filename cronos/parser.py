@@ -1,7 +1,9 @@
 # coding: utf-8
 import os
+import six
 import struct
 import csv
+import unicodedata
 from itertools import count
 from normality import normalize
 
@@ -19,6 +21,29 @@ def vword(data):
     num = word & 0x00ffffff
     flags = (word & 0xff000000) >> 24
     return num, flags
+
+
+def decode_text(text):
+    # All strings should be encoded as CP1251 (Cyrillic)
+    try:
+        return text.decode(ENC)
+        characters = []
+        for character in text:
+            category = unicodedata.category(character)[0]
+            if category in ['C']:
+                character = ' '
+            characters.append(character)
+        return u''.join(characters)
+    except:
+        return None
+
+
+def encode_cell(value):
+    if value is None:
+        return None
+    if not isinstance(value, six.string_types):
+        value = unicode(value)
+    return value.encode('utf-8')
 
 
 def align_sections(data):
@@ -43,7 +68,7 @@ def align_sections(data):
                 'text': text,
                 'buf': buf,
                 'offset': offset,
-                'index': text.index(PK_SENTINEL)
+                'index': text.find(PK_SENTINEL)
             })
             # with open('%s.bin' % offset, 'wb') as fh:
             #     fh.write(text)
@@ -57,12 +82,18 @@ def parse_columns(text, base, count):
     # information (each a short), and the name (prefixed by the length).
     columns = []
     for i in range(count):
+        if len(text[base:]) < 8:
+            break
         col_len, = struct.unpack_from('H', text, base)
         base = base + 2
+        if len(text[base:]) < col_len:
+            break
         col_data = text[base - 1:base - 1 + col_len]
         type_, col_id = struct.unpack_from('>HH', col_data, 0)
         text_len, = struct.unpack_from('>I', col_data, 4)
-        col_name = col_data[8:8 + text_len].decode(ENC)
+        col_name = decode_text(col_data[8:8 + text_len])
+        if col_name is None:
+            continue
         columns.append({
             'id': col_id,
             'name': col_name,
@@ -83,10 +114,14 @@ def parse_table(text, next_byte):
     if ord(text[next_byte + next_len]) != 2:
         return
     # Get the table name.
-    table_name = text[next_byte:next_byte + next_len].decode(ENC)
+    table_name = decode_text(text[next_byte:next_byte + next_len])
+    if table_name is None:
+        return
     next_byte = next_byte + next_len + 1
     # Get the table abbreviation.
-    table_abbr = text[next_byte:next_byte + 2].decode(ENC)
+    table_abbr = decode_text(text[next_byte:next_byte + 2])
+    if table_abbr is None:
+        return
     next_byte = next_byte + 2
     if ord(text[next_byte]) != 1:
         # raise CronosException('Table ID not ended by 0x01!')
@@ -132,13 +167,13 @@ def parse_metadata(section):
     for field in ['BankId', 'BankName']:
         sentinel = field.encode(ENC)
         sentinel = chr(len(sentinel)) + sentinel
-        index = text.index(sentinel)
+        index = text.find(sentinel)
         if index == -1:
             raise CronosException('Missing %s in structure!' % field)
         offset = index + len(sentinel)
         length, _ = vword(text[offset:])
         offset = offset + 4
-        out[field] = text[offset:offset + length].decode(ENC)
+        out[field] = decode_text(text[offset:offset + length])
     return out
 
 
@@ -214,12 +249,9 @@ def parse_data(data_tad, data_dat, table_id, columns):
         record = record[1:]
         record = record.split(RECORD_SEP)
         # TODO: figure out how to detect password-encrypted columns.
-        try:
-            record = [c.decode(ENC) for c in record]
-        except UnicodeDecodeError:
-            continue
+        record = [decode_text(c) for c in record]
         if len(record) != len(columns):
-            record = [unicode(i)] + record
+            record = [i] + record
         yield record
 
     tad_fh.close()
@@ -228,6 +260,8 @@ def parse_data(data_tad, data_dat, table_id, columns):
 
 def make_csv_file_name(meta, table, out_folder):
     bank_name = normalize(meta['BankName'], lowercase=False)
+    if bank_name is None:
+        bank_name = 'Untitled Database'
     table_abbr = normalize(table['abbr'], lowercase=False)
     table_name = normalize(table['name'], lowercase=False)
     file_name = '%s - %s - %s.csv' % (bank_name, table_abbr, table_name)
@@ -257,9 +291,7 @@ def parse(db_folder, out_folder):
         fh = open(make_csv_file_name(meta, table, out_folder), 'w')
         columns = table.get('columns')
         writer = csv.writer(fh)
-        writer.writerow([c['name'].encode('utf-8') for c in columns])
+        writer.writerow([encode_cell(c['name']) for c in columns])
         for row in parse_data(data_tad, data_dat, table.get('id'), columns):
-            writer.writerow([c.encode('utf-8') for c in row])
-            # for v, k in zip(row, columns):
-            #     print v, k
+            writer.writerow([encode_cell(c) for c in row])
         fh.close()
