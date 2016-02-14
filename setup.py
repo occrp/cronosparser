@@ -27,7 +27,8 @@ setup(
     test_suite='nose.collector',
     install_requires=[
         'click',
-        'unicodecsv'
+        'unicodecsv',
+        'normality'
     ],
     tests_require=[
         'nose',

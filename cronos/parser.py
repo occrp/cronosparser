@@ -3,6 +3,7 @@ import os
 import struct
 import csv
 from itertools import count
+from normality import normalize
 
 from cronos.constants import KOD, PK_SENTINEL, RECORD_SEP, ENC, NULL
 
@@ -176,7 +177,7 @@ def parse_record(meta, dat_fh):
     while next_length != 0 and next_length != 0xffff:
         dat_fh.seek(next_offset)
         next_data = dat_fh.read(min(252, next_length))
-        if not len(next_data):
+        if len(next_data) < 4:
             break
         next_offset, = struct.unpack_from('<I', next_data)
         data += next_data[4:]
@@ -187,7 +188,7 @@ def parse_record(meta, dat_fh):
     return data
 
 
-def parse_data(data_tad, data_dat, table_id):
+def parse_data(data_tad, data_dat, table_id, columns):
     # This function uses the offsets present in the TAD file to extract
     # all records for the given ``table_id`` from the DAT file.
     tad_fh = open(data_tad, 'rb')
@@ -211,16 +212,26 @@ def parse_data(data_tad, data_dat, table_id):
             continue
         # First byte is the table ID
         record = record[1:]
-        tuple_ = record.split(RECORD_SEP)
+        record = record.split(RECORD_SEP)
         # TODO: figure out how to detect password-encrypted columns.
         try:
-            tuple_ = [c.decode(ENC) for c in tuple_]
+            record = [c.decode(ENC) for c in record]
         except UnicodeDecodeError:
             continue
-        yield tuple_
+        if len(record) != len(columns):
+            record = [unicode(i)] + record
+        yield record
 
     tad_fh.close()
     dat_fh.close()
+
+
+def make_csv_file_name(meta, table, out_folder):
+    bank_name = normalize(meta['BankName'], lowercase=False)
+    table_abbr = normalize(table['abbr'], lowercase=False)
+    table_name = normalize(table['name'], lowercase=False)
+    file_name = '%s - %s - %s.csv' % (bank_name, table_abbr, table_name)
+    return os.path.join(out_folder, file_name)
 
 
 def parse(db_folder, out_folder):
@@ -239,18 +250,15 @@ def parse(db_folder, out_folder):
     data_dat = os.path.join(db_folder, 'CroBank.dat')
     meta, tables = parse_structure(stru_dat)
 
-    base_name = '%(BankName)s - ' % meta
     for table in tables:
         # TODO: do we want to export the "FL" table?
         if table['abbr'] == 'FL' and table['name'] == 'Files':
             continue
-        fn = base_name + '%(abbr)s - %(name)s.csv' % table
-        fn = os.path.join(out_folder, fn)
-        fh = open(fn, 'w')
+        fh = open(make_csv_file_name(meta, table, out_folder), 'w')
         columns = table.get('columns')
         writer = csv.writer(fh)
         writer.writerow([c['name'].encode('utf-8') for c in columns])
-        for row in parse_data(data_tad, data_dat, table.get('id')):
+        for row in parse_data(data_tad, data_dat, table.get('id'), columns):
             writer.writerow([c.encode('utf-8') for c in row])
             # for v, k in zip(row, columns):
             #     print v, k
