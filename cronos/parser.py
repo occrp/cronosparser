@@ -109,7 +109,7 @@ def parse_table(text, next_byte):
     # and the count of columns.
     next_len = ord(text[next_byte])
     next_byte = next_byte + 1
-    if len(text) < next_byte + next_len:
+    if len(text) < next_byte + next_len + 10:
         return
     if ord(text[next_byte + next_len]) != 2:
         return
