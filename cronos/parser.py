@@ -26,9 +26,8 @@ def vword(data):
 def decode_text(text):
     # All strings should be encoded as CP1251 (Cyrillic)
     try:
-        return text.decode(ENC)
         characters = []
-        for character in text:
+        for character in text.decode(ENC):
             category = unicodedata.category(character)[0]
             if category in ['C']:
                 character = ' '
