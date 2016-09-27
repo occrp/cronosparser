@@ -267,6 +267,16 @@ def make_csv_file_name(meta, table, out_folder):
     return os.path.join(out_folder, file_name)
 
 
+def get_file(db_folder, file_name):
+    """Glob for the poor."""
+    if not os.path.isdir(db_folder):
+        return
+    file_name = file_name.lower().strip()
+    for cand_name in os.listdir(db_folder):
+        if cand_name.lower().strip() == file_name:
+            return os.path.join(db_folder, cand_name)
+
+
 def parse(db_folder, out_folder):
     """
     Parse a cronos database.
@@ -276,11 +286,14 @@ def parse(db_folder, out_folder):
     """
     # The database structure, containing table and column definitions as
     # well as other data.
-    stru_dat = os.path.join(db_folder, 'CroStru.dat')
+    stru_dat = get_file(db_folder, 'CroStru.dat')
     # Index file for the database, which contains offsets for each record.
-    data_tad = os.path.join(db_folder, 'CroBank.tad')
+    data_tad = get_file(db_folder, 'CroBank.tad')
     # Actual data records, can only be decoded using CroBank.tad.
-    data_dat = os.path.join(db_folder, 'CroBank.dat')
+    data_dat = get_file(db_folder, 'CroBank.dat')
+    if None in [stru_dat, data_tad, data_dat]:
+        raise CronosException("Not all database files are present.")
+
     meta, tables = parse_structure(stru_dat)
 
     for table in tables:
