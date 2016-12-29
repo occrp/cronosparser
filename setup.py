@@ -3,7 +3,7 @@ from setuptools import setup, find_packages
 
 setup(
     name='cronosparser',
-    version='0.1',
+    version='0.2',
     description="Parser for CronosPro / CronosPlus database files.",
     long_description="",
     classifiers=[
