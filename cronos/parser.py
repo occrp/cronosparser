@@ -1,201 +1,255 @@
-# coding: utf-8
-import os
-import six
-import struct
-import csv
-import unicodedata
 from itertools import count
-from normality import normalize
+import os
+import struct
 
-from cronos.constants import KOD, PK_SENTINEL, RECORD_SEP, ENC, NULL
+from .constants import (
+    KOD,
+    ENC,
+    NULL, RECORD_SEP,
+    get_sentinel,
+    PK_SENTINEL,
+    BANK_DAT_FILE_NAME, BANK_TAD_FILE_NAME,
+    STRU_DAT_FILE_NAME
+)
 
 
 class CronosException(Exception):
     """General parsing errors."""
 
 
-def vword(data):
+def vword(bytes_data, offset=0):
     # A vodka word is a russian data unit, encompassing three bytes on good
     # days, with a flag in the fourth.
-    word, = struct.unpack_from('<I', data)
+    word, = struct.unpack_from('<I', bytes_data, offset=offset)
     num = word & 0x00ffffff
     flags = (word & 0xff000000) >> 24
     return num, flags
 
 
-def decode_text(text):
-    # All strings should be encoded as CP1251 (Cyrillic)
-    try:
-        characters = []
-        for character in text.decode(ENC):
-            category = unicodedata.category(character)[0]
-            if category in ['C']:
-                character = ' '
-            characters.append(character)
-        return u''.join(characters)
-    except:
-        return None
+def decode(bytes_data):
+    return bytes_data.decode(
+        ENC,
+        # TODO: do we need to return anything if some chars were not decoded?
+        errors='replace',
+    )
 
 
-def encode_cell(value):
-    if value is None:
-        return None
-    if not isinstance(value, six.string_types):
-        value = unicode(value)
-    return value.encode('utf-8')
-
-
-def align_sections(data):
+def align_sections(bytes_data):
     # We don't know how to decode all of the CroStru file, so we're guessing
     # the offsets for particular sections which we can decipher. This is
     # done by applying a sliding window, and looking for a key phrase (i.e.
     # the russian string for the primary key column).
-    bytes_ = [ord(b) for b in data]
     sections = []
-    # guess the offset for each section by using a sentinel
     for offset in range(256):
         buf = []
-        for i, byte in enumerate(bytes_):
+        for i, byte in enumerate(bytes_data):
             # this is from the web (CRO.H)
             # buf[i] = kod[buf[i]] - (unsigned char) i - (unsigned char) offset
             better_byte = (KOD[byte] - i - offset) % 256
             buf.append(better_byte)
 
-        text = ''.join([chr(b) for b in buf])
-        if PK_SENTINEL in text:
+        bs = bytes(buf)
+        pk_index = bs.find(PK_SENTINEL)
+        if pk_index != -1:
             sections.append({
-                'text': text,
-                'buf': buf,
+                'bytes': bs,
                 'offset': offset,
-                'index': text.find(PK_SENTINEL)
+                'pk_index': pk_index
             })
             # with open('%s.bin' % offset, 'wb') as fh:
             #     fh.write(text)
-    sections = sorted(sections, key=lambda s: s['index'])
+    sections.sort(key=lambda s: s['pk_index'])
     return sections
 
 
-def parse_columns(text, base, count):
-    # Parse the columns from the table definition. Columns start with
-    # a short record length indicator, followed by type and sequence
-    # information (each a short), and the name (prefixed by the length).
-    columns = []
-    for i in range(count):
-        if len(text[base:]) < 8:
-            break
-        col_len, = struct.unpack_from('H', text, base)
-        base = base + 2
-        if len(text[base:]) < col_len:
-            break
-        col_data = text[base - 1:base - 1 + col_len]
-        type_, col_id = struct.unpack_from('>HH', col_data, 0)
-        text_len, = struct.unpack_from('>I', col_data, 4)
-        col_name = decode_text(col_data[8:8 + text_len])
-        if col_name is None:
-            continue
-        columns.append({
-            'id': col_id,
-            'name': col_name,
-            'type': type_
-        })
-        base = base + col_len
-    return columns
-
-
-def parse_table(text, next_byte):
-    # Once we've guessed a table definition location, we can start
-    # parsing the name; followed by the two-letter table abbreviation
-    # and the count of columns.
-    next_len = ord(text[next_byte])
-    next_byte = next_byte + 1
-    if len(text) < next_byte + next_len + 10:
-        return
-    if ord(text[next_byte + next_len]) != 2:
-        return
-    # Get the table name.
-    table_name = decode_text(text[next_byte:next_byte + next_len])
-    if table_name is None:
-        return
-    next_byte = next_byte + next_len + 1
-    # Get the table abbreviation.
-    table_abbr = decode_text(text[next_byte:next_byte + 2])
-    if table_abbr is None:
-        return
-    next_byte = next_byte + 2
-    if ord(text[next_byte]) != 1:
-        # raise CronosException('Table ID not ended by 0x01!')
-        return
-    next_byte = next_byte + 4
-    # Get the number of columns for the table.
-    col_count, = struct.unpack_from('I', text, next_byte)
+def parse_column(bytes_data, start_index):
+    """
+    Column structure is
+    1. four bytes with column content length
+    2. two bytes with column type
+    3. two bytes with column id
+    4. 4 bytes with length of column name
+    5. bytes with column name
+    """
+    offset = start_index
+    # unpack 1-4
+    col_len, col_type, col_id, col_name_len = struct.unpack_from(
+        (
+            '>'  # big-endian unpack mode
+            'I'  # unsigned int for column content length (1)
+            'H'  # unsigned short for column type (2)
+            'H'  # unsigned short for column id (3)
+            'I'  # unsigned int for column name length (4)
+        ),
+        bytes_data,
+        offset=offset,
+    )
+    offset += 4 + 2 + 2 + 4
+    # unpack 5
+    col_name = struct.unpack_from(
+        f'{col_name_len}c',  # char bytes of column name (5)
+        bytes_data,
+        offset=offset,
+    )
+    # collect and decode column name
+    col_name = decode(b''.join(col_name))
     return {
-        'name': table_name,
-        'abbr': table_abbr,
-        'columns': parse_columns(text, next_byte + 4, col_count),
-        'column_count': col_count
+        'id': col_id,
+        'type': col_type,
+        'name': col_name,
+        'start_index': start_index,
+        'end_index': start_index + col_len,
     }
 
 
-def parse_table_section(section, table_id):
-    # Try and locate the beginning of a table definition using
-    # some quasi-magical heuristics (i.e. the pattern of the
-    # table definition).
-    #
-    # TABLE_ID + NULL + NULL + NULL + NAME_LEN + NAME
-    # + 0x02 + ABBR1 + ABBR2 + 0x01 + NUM_TABLES
-    text = section['text']
-    sig = chr(table_id) + NULL + NULL + NULL
-    offset = 0
+def iparse_columns(bytes_data, start_index):
+    offset = start_index
+    # columns start with unsigned int with number of columns
+    col_count, = struct.unpack_from(
+        '>I',
+        bytes_data,
+        offset=offset,
+    )
+    offset += 4
+    for _ in range(col_count):
+        column = parse_column(bytes_data, start_index=offset)
+        yield column
+        # two columns contents can't intersect
+        # therefore we just move offset to column end
+        offset = column['end_index']
+        # there are two bytes between columns (idk what is it)
+        offset += 2
+
+
+def parse_table(bytes_data, start_index):
+    """
+    Table structure looks is
+    1. table_id byte
+    2. three nulls
+    3. byte with length of the table name
+    4. bytes with table name
+    5. byte with 0x02 value
+    6. two bytes of table abbreviation
+    7. byte with 0x01 value
+    """
+    offset = start_index
+    # unpack 1-3
+    table_id, name_len = struct.unpack_from(
+        (
+            'B'  # unsigned char for table_id (1)
+            'xxx'  # three nulls (2)
+            'B'  # unsigned char for table name length (3)
+        ),
+        bytes_data,
+        offset=offset,
+    )
+    # name can't be empty string
+    if name_len == 0:
+        return
+    offset += 1 + 3 + 1
+    # unpack 4-7
+    *name, pad2, abbr1, abbr2, pad1 = struct.unpack_from(
+        (
+            f'>{name_len}c'  # char bytes of table name (4)
+            'B'  # unsigned char for 0x02 value (5)
+            '2c'  # two chars for table abbreviation (6)
+            'B'  # unsigned char for 0x01 value (7)
+        ),
+        bytes_data,
+        offset=offset,
+    )
+    # it looks like table but it's not
+    if pad2 != 0x02 or pad1 != 0x01:
+        return
+    # collect and decode name and abbreviation
+    name = decode(b''.join(name))
+    abbr = decode(b''.join((abbr1, abbr2)))
+    offset += name_len + 1 + 2 + 1
+
+    columns = list(iparse_columns(bytes_data, start_index=offset))
+    # table end index is last column end index
+    end_index = (
+        columns[-1]['end_index']
+        if columns
+        else offset
+    )
+
+    return {
+        'id': table_id,
+        'name': name,
+        'abbr': abbr,
+        'columns': columns,
+        'start_index': start_index,
+        'end_index': end_index,
+    }
+
+
+def iparse_tables(bytes_data):
+    # every table has three nulls in a row
+    to_find = NULL + NULL + NULL
+    # start with offset 1 because table_id is located before three nulls
+    offset = 1
     while True:
-        index = text.find(sig, offset)
+        index = bytes_data.find(to_find, offset)
         if index == -1:
+            # there are no three nulls so there are no more tables
             break
-        offset = index + 1
-        next_byte = index + len(sig)
-        table = parse_table(text, next_byte)
-        if table is not None:
-            table['id'] = table_id
-            yield table
+        # don't forget about table_id byte before three nulls
+        table_start_index = index - 1
+        table = parse_table(bytes_data, start_index=table_start_index)
+        # there can be three nulls in data but it's not a table
+        if table is None:
+            # just move offset to search again
+            offset = index + 1
+            continue
+
+        yield table
+        # two tables contents can't intersect
+        # therefore we just move offset to table end
+        offset = table['end_index']
 
 
-def parse_metadata(section):
+def parse_metadata(bytes_data, fields=('BankId', 'BankName')):
     # Extract some nice-to-have metadata, such as the internal name
     # of the database and its ID.
-    text = section['text']
-    out = {}
-    for field in ['BankId', 'BankName']:
-        sentinel = field.encode(ENC)
-        sentinel = chr(len(sentinel)) + sentinel
-        index = text.find(sentinel)
+    metadata = {}
+    for field in fields:
+        sentinel = get_sentinel(field)
+        index = bytes_data.find(sentinel)
         if index == -1:
-            raise CronosException('Missing %s in structure!' % field)
+            # TODO: log that field was not found in structure
+            continue
+
         offset = index + len(sentinel)
-        length, _ = vword(text[offset:])
-        offset = offset + 4
-        out[field] = decode_text(text[offset:offset + length])
-    return out
+        length, _ = vword(bytes_data, offset=offset)
+        offset += 4
+        metadata[field] = decode(bytes_data[offset:offset + length])
+
+    return metadata
 
 
-def parse_structure(file_name):
+def parse_structure(file_path):
     # The structure file holds metadata, such as table and column
     # definitions.
-    with open(file_name, 'rb') as fh:
+    with open(file_path, 'rb') as fh:
         data = fh.read()
-    if not data.startswith('CroFile'):
+
+    if not data.startswith(b'CroFile'):
         raise CronosException('Not a CroStru.dat file.')
+
     sections = align_sections(data)
-    if not len(sections):
+    if not sections:
         raise CronosException('Could not recover CroStru.dat sections.')
 
-    meta = parse_metadata(sections[0])
+    metadata = parse_metadata(sections[0]['bytes'])
 
-    tables = []
-    for table_section in sections:
-        for i in range(0, 256):
-            for table in parse_table_section(table_section, i):
-                tables.append(table)
+    tables = [
+        table
+        for section in sections
+        for table in iparse_tables(section['bytes'])
+    ]
 
-    return meta, tables
+    return metadata, tables
 
 
 def parse_record(meta, dat_fh):
@@ -222,88 +276,80 @@ def parse_record(meta, dat_fh):
     return data
 
 
-def parse_data(data_tad, data_dat, table_id, columns):
-    # This function uses the offsets present in the TAD file to extract
-    # all records for the given ``table_id`` from the DAT file.
-    tad_fh = open(data_tad, 'rb')
-    dat_fh = open(data_dat, 'rb')
+def iparse_records(data_tad, data_dat, table=None):
+    """
+    This function uses the offsets present in the TAD file to extract
+    all records for the given ``table_id`` from the DAT file.
 
-    # Check the file signature.
-    sig = dat_fh.read(7)
-    if sig != 'CroFile':
-        raise CronosException('Not a CroBank.dat file.')
+    `table` param is optional because structure can be not parsed
+    """
+    with open(data_tad, 'rb') as tad_fh, open(data_dat, 'rb') as dat_fh:
+        # Check the file signature.
+        sig = dat_fh.read(7)
+        if sig != b'CroFile':
+            raise CronosException('Not a CroBank.dat file.')
 
-    # One day, we'll find out what this header means.
-    tad_fh.seek(8)
-    for i in count(1):
-        meta = tad_fh.read(12)
-        if len(meta) != 12:
-            break
-        record = parse_record(meta, dat_fh)
-        if record is None or len(record) < 2:
-            continue
-        if table_id != ord(record[0]):
-            continue
-        # First byte is the table ID
-        record = record[1:]
-        record = record.split(RECORD_SEP)
-        # TODO: figure out how to detect password-encrypted columns.
-        record = [decode_text(c) for c in record]
-        if len(record) != len(columns):
-            record = [i] + record
-        yield record
+        # One day, we'll find out what this header means.
+        tad_fh.seek(8)
+        for i in count(1):
+            meta = tad_fh.read(12)
+            if len(meta) != 12:
+                break
+            record = parse_record(meta, dat_fh)
+            if record is None or len(record) < 2:
+                continue
+            if table and table['id'] != record[0]:
+                continue
+            # First byte is the table ID
+            record = record[1:]
+            # TODO: figure out how to detect password-encrypted columns.
+            record = [
+                decode(value)
+                for value in record.split(RECORD_SEP)
+            ]
+            if table:
+                if len(record) != len(table['columns']):
+                    record.insert(0, i)
+                # TODO: convert values according to their column type
 
-    tad_fh.close()
-    dat_fh.close()
-
-
-def make_csv_file_name(meta, table, out_folder):
-    bank_name = normalize(meta['BankName'], lowercase=False)
-    if bank_name is None:
-        bank_name = 'Untitled Database'
-    table_abbr = normalize(table['abbr'], lowercase=False)
-    table_name = normalize(table['name'], lowercase=False)
-    file_name = '%s - %s - %s.csv' % (bank_name, table_abbr, table_name)
-    return os.path.join(out_folder, file_name)
+            yield record
 
 
 def get_file(db_folder, file_name):
     """Glob for the poor."""
     if not os.path.isdir(db_folder):
-        return
-    file_name = file_name.lower().strip()
-    for cand_name in os.listdir(db_folder):
-        if cand_name.lower().strip() == file_name:
-            return os.path.join(db_folder, cand_name)
+        raise CronosException(f'`{db_folder}` is not a folder path')
+
+    file_path = os.path.join(db_folder, file_name)
+    if not os.path.exists(file_path):
+        raise CronosException(f'File `{file_path}` not found')
+
+    return file_path
 
 
-def parse(db_folder, out_folder):
+def parse(db_folder):
     """
-    Parse a cronos database.
-
-    Convert the database located in ``db_folder`` into CSV files in the
-    directory ``out_folder``.
+    Parse a cronos database located in ``db_folder``
     """
     # The database structure, containing table and column definitions as
     # well as other data.
-    stru_dat = get_file(db_folder, 'CroStru.dat')
+    stru_dat = get_file(db_folder, STRU_DAT_FILE_NAME)
     # Index file for the database, which contains offsets for each record.
-    data_tad = get_file(db_folder, 'CroBank.tad')
+    data_tad = get_file(db_folder, BANK_TAD_FILE_NAME)
     # Actual data records, can only be decoded using CroBank.tad.
-    data_dat = get_file(db_folder, 'CroBank.dat')
-    if None in [stru_dat, data_tad, data_dat]:
-        raise CronosException("Not all database files are present.")
+    data_dat = get_file(db_folder, BANK_DAT_FILE_NAME)
 
-    meta, tables = parse_structure(stru_dat)
+    metadata, tables = parse_structure(stru_dat)
 
     for table in tables:
-        # TODO: do we want to export the "FL" table?
+        # TODO: how to parse Files table records?
         if table['abbr'] == 'FL' and table['name'] == 'Files':
             continue
-        fh = open(make_csv_file_name(meta, table, out_folder), 'w')
-        columns = table.get('columns')
-        writer = csv.writer(fh)
-        writer.writerow([encode_cell(c['name']) for c in columns])
-        for row in parse_data(data_tad, data_dat, table.get('id'), columns):
-            writer.writerow([encode_cell(c) for c in row])
-        fh.close()
+
+        table['records'] = [
+            # zip with columns?
+            record
+            for record in iparse_records(data_tad, data_dat, table=table)
+        ]
+
+    return metadata, tables
