@@ -3,7 +3,7 @@ from setuptools import setup, find_packages
 
 setup(
     name='cronosparser',
-    version='0.2',
+    version='1.0',
     description="Parser for CronosPro / CronosPlus database files.",
     long_description="",
     classifiers=[
@@ -11,8 +11,10 @@ setup(
         "Intended Audience :: Developers",
         "License :: OSI Approved :: MIT License",
         "Operating System :: OS Independent",
-        'Programming Language :: Python :: 2.6',
-        'Programming Language :: Python :: 2.7'
+        'Programming Language :: Python :: 3.6',
+        'Programming Language :: Python :: 3.7',
+        'Programming Language :: Python :: 3.8',
+        'Programming Language :: Python :: 3.9',
     ],
     keywords='files walk index survey',
     author='OCCRP',
@@ -28,8 +30,6 @@ setup(
     install_requires=[
         'six',
         'click',
-        'unicodecsv',
-        'normality'
     ],
     tests_require=[
         'nose',
