@@ -1,5 +1,11 @@
 # cronosparser
 
+## Notice: The project is no longer being actively maintained. :warning:
+
+We recommend using the official replacement [cronodump utility](https://github.com/alephdata/cronodump).
+
+* * *
+
 ### Status
 
 As of late 2020, `cronosparser` is broken in the following ways:
